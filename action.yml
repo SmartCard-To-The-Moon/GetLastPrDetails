@@ -1,0 +1,97 @@
+name: 'GetLast Pr Details'
+description: 'Enable Version Increment based on last PR details'
+inputs:
+  token:
+    description: 'The token to be used to interact with github api'
+    required: true
+  reponame:
+    description: 'The name of the repository'
+    required: true
+  commitMessage:
+    description: 'The last commit message of the merged pr'
+    required: true
+  eventName:
+    description: 'The github event which triggered this action'
+    required: true
+outputs:
+  PR_BRANCH:
+    description: 'The branch name of the last PR'
+    value: ${{ steps.checkautoincrement.outputs.PR_BRANCH }}
+  AutoIncrement:
+    description: 'Indicates whether to auto-increment the version'
+    value: ${{ steps.checkautoincrement.outputs.AutoIncrement  }}
+runs:
+  using: "composite"
+  steps:
+    - name: Get Last PR Details
+      id: checkautoincrement
+      shell: bash  
+      run: |
+        # Initialize variables
+        shouldIncrement="no"
+        branch=""
+        
+        echo "Event name: ${{ inputs.eventName }}"
+        echo "Current branch: ${{ github.ref_name }}"
+        echo "Commit message: ${{ inputs.commitMessage }}"
+        
+        # Check if this is a push event to main/master/develop
+        if [ "${{ inputs.eventName }}" = "push" ] && [[ "${{ github.ref_name }}" =~ ^(main|master|develop)$ ]]; then
+            echo "This is a push to a main branch (main/master/develop), checking for PR details..."
+            
+            # Extract PR number from commit message
+            # Handle both formats:
+            # 1. Regular commit: "SMAR-126 #comment Fixes account registration API endpoint (#35)"
+            # 2. Merge commit: "Merge pull request #36 from SmartCard-To-The-Moon/branch"
+            
+            prNumber=""
+            
+            # First try merge commit format: "Merge pull request #123"
+            if [[ "${{ inputs.commitMessage }}" =~ Merge[[:space:]]pull[[:space:]]request[[:space:]]\#([0-9]+) ]]; then
+                prNumber="${BASH_REMATCH[1]}"
+                echo "Found PR number from merge commit: $prNumber"
+            else
+                # Try regular commit format: "(#123)"
+                prNumber=$(echo "${{ inputs.commitMessage }}" | grep -oE '\(#([0-9]+)\)' | grep -oE '[0-9]+' | tail -1)
+                if [ ! -z "$prNumber" ]; then
+                    echo "Found PR number from regular commit: $prNumber"
+                fi
+            fi
+
+            # Check if we found a PR number
+            if [ ! -z "$prNumber" ]; then
+                echo "Found PR number: $prNumber"
+                
+                # Get PR details from GitHub API
+                prDetails=$(curl -s -H "Authorization: Bearer ${{ inputs.token }}" "https://api.github.com/repos/${{ inputs.reponame }}/pulls/$prNumber")
+
+                # Check if API call was successful
+                if [ $? -eq 0 ] && [ "$prDetails" != "null" ]; then
+                    # Extract branch name
+                    branch=$(echo "$prDetails" | jq -r '.head.ref')
+                    
+                    # Check if branch extraction was successful
+                    if [ "$branch" != "null" ] && [ ! -z "$branch" ]; then
+                        echo "Found PR branch: $branch"
+                        shouldIncrement="yes"
+                    else
+                        echo "Failed to extract branch name from PR details"
+                    fi
+                else
+                    echo "Failed to fetch PR details from GitHub API"
+                fi
+            else
+                echo "No PR number found in commit message: ${{ inputs.commitMessage }}"
+            fi
+        else
+            echo "Not a push to main branch or not a push event. Skipping version increment."
+            echo "Event: ${{ inputs.eventName }}, Branch: ${{ github.ref_name }}"
+        fi
+
+        # Set outputs
+        echo "PR_BRANCH=$branch" >> $GITHUB_OUTPUT
+        echo "AutoIncrement=$shouldIncrement" >> $GITHUB_OUTPUT
+        
+        echo "Final results:"
+        echo "  PR_BRANCH=$branch"
+        echo "  AutoIncrement=$shouldIncrement"
